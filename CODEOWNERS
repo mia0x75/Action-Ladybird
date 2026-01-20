@@ -1,0 +1,27 @@
+# CODEOWNERS for Action-Ladybird
+
+# This file defines the ownership rules for the repository.
+# Changes to sensitive files require review from security-focused maintainers.
+
+# Default owners for all files
+* @LadybirdBrowser/security-reviewers
+
+# GitHub Actions workflows require special review
+.github/workflows/*.yml @LadybirdBrowser/ci-maintainers
+.github/workflows/*.yaml @LadybirdBrowser/ci-maintainers
+.github/actions/** @LadybirdBrowser/ci-maintainers
+
+# Security-related files require security team review
+SECURITY.md @LadybirdBrowser/security-team
+.github/workflows/_*.yml @LadybirdBrowser/security-team
+
+# Configuration files require maintainer review
+.github/workflow-config.json @LadybirdBrowser/maintainers
+.gitignore @LadybirdBrowser/maintainers
+
+# Documentation changes can be reviewed by anyone
+README.md @LadybirdBrowser/docs-reviewers
+CONTRIBUTING.md @LadybirdBrowser/docs-reviewers
+
+# CI/CD Configuration
+.github/workflows/build-and-release.yml @LadybirdBrowser/ci-maintainers @LadybirdBrowser/security-reviewers

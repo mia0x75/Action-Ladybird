@@ -1,0 +1,83 @@
+{
+  "workflow_name": "Build and Release Ladybird Browser",
+  "version": "2.0.0",
+  "description": "Automated CI/CD pipeline for building and releasing Ladybird Browser",
+  "matrix": {
+    "platforms": [
+      {
+        "name": "ubuntu",
+        "display_name": "Ubuntu (GCC 14)",
+        "runner": "ubuntu-latest",
+        "compiler": "gcc-14",
+        "timeout_minutes": 360,
+        "features": [
+          "X11/XCB support",
+          "PulseAudio audio",
+          "Portable with RPATH"
+        ]
+      },
+      {
+        "name": "fedora",
+        "display_name": "Fedora (System GCC)",
+        "runner": "ubuntu-latest",
+        "container": "fedora:latest",
+        "compiler": "system-gcc",
+        "timeout_minutes": 360,
+        "features": [
+          "X11/XCB support",
+          "PulseAudio audio",
+          "Portable with RPATH"
+        ]
+      }
+    ]
+  },
+  "build_presets": {
+    "Release": {
+      "cmake_preset": "Release",
+      "description": "Optimized release build",
+      "build_dir": "Build/release"
+    },
+    "Debug": {
+      "cmake_preset": "Debug",
+      "description": "Debug build with symbols",
+      "build_dir": "Build/debug"
+    }
+  },
+  "caching": {
+    "ccache": {
+      "max_size": "500M",
+      "compression": true
+    },
+    "vcpkg": {
+      "enabled": true,
+      "path": "Build/vcpkg"
+    }
+  },
+  "artifacts": {
+    "ubuntu": {
+      "name": "ladybird-ubuntu",
+      "format": "tar.gz",
+      "includes": ["bin/Ladybird", "lib/*.so*"]
+    },
+    "fedora": {
+      "name": "ladybird-fedora",
+      "format": "tar.gz",
+      "includes": ["bin/Ladybird", "lib/*.so*"]
+    }
+  },
+  "triggers": {
+    "push": ["main", "master"],
+    "schedule": ["0 0,12 * * *"],
+    "workflow_dispatch": {
+      "version": {
+        "description": "Release version number",
+        "required": true
+      }
+    }
+  },
+  "permissions": {
+    "contents": "write",
+    "issues": "write",
+    "pull-requests": "write"
+  }
+}
