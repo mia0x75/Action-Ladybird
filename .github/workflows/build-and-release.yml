@@ -326,9 +326,9 @@ jobs:
         working-directory: ladybird-src
         run: |
           su runner -c "mkdir -p dist/{bin,lib}"
-          su runner -c "mkdir -p dist/share/ladybird/res"
-          su runner -c 'find . -type d -name res | grep -E "(Base|Userland|Build)" | sort'
-          #cp -r Build/res dist/share/ladybird/
+          su runner -c "mkdir -p dist/share/ladybird"
+          ls -lah Base/res
+          cp -r Base/res dist/share/ladybird/
 
           su runner -c 'find Build/release/libexec -maxdepth 1 -type f -executable -exec cp {} dist/bin \;'
 
