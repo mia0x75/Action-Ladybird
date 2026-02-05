@@ -343,6 +343,24 @@ jobs:
                          ! -name "Test*" ! -name "CTest*" ! -name "cmake*" \
                          -exec cp {} dist/bin/ \;'
 
+          MISSING_LIBS=(
+            liblibEGL_angle.so
+            liblibGLESv2_angle.so
+            libskia.so
+            libsqlite3.so
+            libtheoradec.so
+            libtheoraenc.so
+            libyuv.so
+          )
+
+          for lib in "${MISSING_LIBS[@]}"; do
+            FOUND=$(find Build -type f -name "$lib*" 2>/dev/null | head -n1)
+            echo ${FOUND}
+            if [ -n "$FOUND" ]; then
+              cp "$FOUND" dist/lib/
+            fi
+          done
+
           if [ -d "Build/release/vcpkg_installed" ]; then
             VCPKG_BASE="Build/release/vcpkg_installed"
           elif [ -d "Build/vcpkg/installed" ]; then
@@ -364,8 +382,6 @@ jobs:
           ls ${VCPKG_LIB_DIR}
 
           su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \\;"
-
-          sudo dnf install -y patchelf
 
           su runner -c '
             for exe in dist/bin/* dist/libexec/*; do
