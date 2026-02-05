@@ -326,48 +326,18 @@ jobs:
         working-directory: ladybird-src
         run: |
           su runner -c "mkdir -p dist/{bin,lib}"
-          su runner -c "mkdir -p dist/share/ladybird"
-          ls -lah Base/res
-          cp -r Base/res dist/share/ladybird/
+          su runner -c "mkdir -p dist/share/ladybird/res dist/libexec"
+          cp -r Base/res/* dist/share/ladybird/res/
 
-          su runner -c 'find Build/release/libexec -maxdepth 1 -type f -executable -exec cp {} dist/bin \;'
-
-          MISSING_LIBS=(
-            liblibEGL_angle.so
-            liblibGLESv2_angle.so
-            libskia.so
-            libsqlite3.so
-            libtheoradec.so
-            libtheoraenc.so
-            libyuv.so
-          )
-
-          for lib in "${MISSING_LIBS[@]}"; do
-            echo "🔍 Searching for $lib ..."
-            FOUND=$(find Build -type f -name "$lib*" 2>/dev/null | head -n1)
-            if [ -n "$FOUND" ]; then
-              cp "$FOUND" dist/lib/
-              echo "✅ Copied: $(basename "$FOUND")"
-            else
-              echo "❌ NOT FOUND: $lib"
-              BASE_NAME=$(echo "$lib" | sed 's/^lib//')
-              ALTERNATE=$(find Build -type f -name "*$BASE_NAME*.so*" 2>/dev/null | head -n1)
-              if [ -n "$ALTERNATE" ]; then
-                cp "$ALTERNATE" dist/lib/
-                echo "✅ Copied alternative: $(basename "$ALTERNATE")"
-              else
-                echo "   Still not found. Check build logs for Skia/Angle/Theora."
-              fi
-            fi
-          done
+          if [ -d Build/release/libexec ]; then
+            su runner -c 'find Build/release/libexec -maxdepth 1 -type f -executable -exec cp {} dist/libexec/ \;'
+          fi
 
           LAGOM_LIB_DIR="Build/release/lib64"
 
           if [ -n "$LAGOM_LIB_DIR" ] && [ -d "$LAGOM_LIB_DIR" ]; then
             su runner -c "find \"$LAGOM_LIB_DIR\" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \\;"
           fi
-
-          tree dist
 
           su runner -c 'find Build/release/bin -maxdepth 1 -type f -executable \
                          ! -name "Test*" ! -name "CTest*" ! -name "cmake*" \
@@ -390,16 +360,22 @@ jobs:
             exit 1
           fi
 
+          echo "VCPKG_LIB_DIR = ${VCPKG_LIB_DIR}"
+          ls ${VCPKG_LIB_DIR}
+
           su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \\;"
 
-          if [ -d Build/release/lib64 ]; then
-            su runner -c "find \"Build/release/lib64\" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \\;"
-          fi
-
           sudo dnf install -y patchelf
-          su runner -c 'for exe in dist/bin/*; do patchelf --set-rpath "\$ORIGIN/../lib" "$exe"; done'
 
-          tree dist
+          su runner -c '
+            for exe in dist/bin/* dist/libexec/*; do
+              [ -f "$exe" ] && patchelf --set-rpath "\$ORIGIN/../lib" "$exe"
+            done
+            for lib in dist/lib/*.so*; do
+              [ -f "$lib" ] && patchelf --set-rpath "\$ORIGIN" "$lib"
+            done
+          '
+
           su runner -c "tar -czf ladybird-fedora.tar.gz dist"
           ls -lah ladybird-fedora.tar.gz
 
