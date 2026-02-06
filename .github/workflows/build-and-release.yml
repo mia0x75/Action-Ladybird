@@ -331,12 +331,12 @@ jobs:
 
           # Step 2: Copy resources
           # Base/res/* -> dist/share/ladybird/res/
-          cp -r Base/res/* dist/share/ladybird/res/
+          su runner -c "cp -v -r Base/res/* dist/share/ladybird/res/"
 
           # Step 3: Copy libexec folder
           # Build/release/libexec -> dist/libexec
           if [ -d Build/release/libexec ]; then
-            su runner -c 'find Build/release/libexec -maxdepth 1 -type f -executable -exec cp {} dist/libexec/ \;'
+            su runner -c 'find Build/release/libexec -maxdepth 1 -type f -executable -exec cp -v {} dist/libexec/ \;'
           fi
 
           # Step 4: Copy lib folder
@@ -344,7 +344,8 @@ jobs:
           LAGOM_LIB_DIR="Build/release/lib64"
 
           if [ -n "$LAGOM_LIB_DIR" ] && [ -d "$LAGOM_LIB_DIR" ]; then
-            su runner -c "find \"$LAGOM_LIB_DIR\" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \\;"
+            su runner -c "find \"$LAGOM_LIB_DIR\" -type f -name '*.so'   -exec cp -v {} dist/lib/ \\;"
+            su runner -c "find \"$LAGOM_LIB_DIR\" -type f -name '*.so.*' -exec cp -v {} dist/lib/ \\;"
           fi
           ls -lah dist/lib
 
@@ -352,7 +353,7 @@ jobs:
           # Build/release/bin -> dist/bin
           su runner -c 'find Build/release/bin -maxdepth 1 -type f -executable \
                          ! -name "Test*" ! -name "CTest*" ! -name "cmake*" \
-                         -exec cp {} dist/bin/ \;'
+                         -exec cp -v {} dist/bin/ \;'
 
           # Step 6: Copy vcpkg lib
           # Build/release/vcpkg_installed/x64-linux-dynamic/lib -> dist/lib
@@ -369,11 +370,17 @@ jobs:
           VCPKG_LIB_DIR="$VCPKG_BASE/$TRIPLET/lib"
           if [ ! -d "$VCPKG_LIB_DIR" ]; then
             echo "[ERROR] vcpkg lib dir not found"
-            ls -la Build/vcpkg/installed/
             exit 1
+          else
+            ls -lah $VCPKG_LIB_DIR
           fi
 
-          su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \\;"
+          if [ -n "$VCPKG_LIB_DIR" ] && [ -d "$VCPKG_LIB_DIR" ]; then
+            su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so'   -exec cp -v {} dist/lib/ \\;"
+            su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so.*' -exec cp -v {} dist/lib/ \\;"
+          else
+            echo "[ERROR] vcpkg lib dir not found"
+          fi
           ls -lah dist/lib
 
           # Step 7: Run patchelf
