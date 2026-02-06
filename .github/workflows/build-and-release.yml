@@ -310,7 +310,7 @@ jobs:
         working-directory: ladybird-src
         run: |
           if [ ! -f "Build/release/bin/Ladybird" ]; then
-            echo "ERROR: Ladybird binary not found after build"
+            echo "[ERROR] Ladybird binary not found after build"
             su runner -c "ls -la Build/release/bin/"
             exit 1
           fi
@@ -325,64 +325,58 @@ jobs:
       - name: Create portable Ladybird bundle with runtime libraries
         working-directory: ladybird-src
         run: |
+          # Step 1: Prepare folder structure
           su runner -c "mkdir -p dist/{bin,lib}"
           su runner -c "mkdir -p dist/share/ladybird/res dist/libexec"
+
+          # Step 2: Copy resources
+          # Base/res/* -> dist/share/ladybird/res/
           cp -r Base/res/* dist/share/ladybird/res/
 
+          # Step 3: Copy libexec folder
+          # Build/release/libexec -> dist/libexec
           if [ -d Build/release/libexec ]; then
             su runner -c 'find Build/release/libexec -maxdepth 1 -type f -executable -exec cp {} dist/libexec/ \;'
           fi
 
+          # Step 4: Copy lib folder
+          # Build/release/lib64 -> dist/lib
           LAGOM_LIB_DIR="Build/release/lib64"
 
           if [ -n "$LAGOM_LIB_DIR" ] && [ -d "$LAGOM_LIB_DIR" ]; then
             su runner -c "find \"$LAGOM_LIB_DIR\" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \\;"
           fi
+          ls -lah dist/lib
 
+          # Step 5: Copy bin folder
+          # Build/release/bin -> dist/bin
           su runner -c 'find Build/release/bin -maxdepth 1 -type f -executable \
                          ! -name "Test*" ! -name "CTest*" ! -name "cmake*" \
                          -exec cp {} dist/bin/ \;'
 
-          MISSING_LIBS=(
-            liblibEGL_angle.so
-            liblibGLESv2_angle.so
-            libskia.so
-            libsqlite3.so
-            libtheoradec.so
-            libtheoraenc.so
-            libyuv.so
-          )
-
-          for lib in "${MISSING_LIBS[@]}"; do
-            FOUND=$(find Build -type f -name "$lib*" 2>/dev/null | head -n1)
-            echo ${FOUND}
-            if [ -n "$FOUND" ]; then
-              cp "$FOUND" dist/lib/
-            fi
-          done
-
+          # Step 6: Copy vcpkg lib
+          # Build/release/vcpkg_installed/x64-linux-dynamic/lib -> dist/lib
           if [ -d "Build/release/vcpkg_installed" ]; then
             VCPKG_BASE="Build/release/vcpkg_installed"
           elif [ -d "Build/vcpkg/installed" ]; then
             VCPKG_BASE="Build/vcpkg/installed"
           else
-            echo "ERROR: Cannot find vcpkg installed directory"
+            echo "[ERROR] Cannot find vcpkg installed directory"
             exit 1
           fi
 
           TRIPLET=$(ls "$VCPKG_BASE" | grep -E 'x64-linux' | head -n1)
           VCPKG_LIB_DIR="$VCPKG_BASE/$TRIPLET/lib"
           if [ ! -d "$VCPKG_LIB_DIR" ]; then
-            echo "Error: vcpkg lib dir not found"
+            echo "[ERROR] vcpkg lib dir not found"
             ls -la Build/vcpkg/installed/
             exit 1
           fi
 
-          echo "VCPKG_LIB_DIR = ${VCPKG_LIB_DIR}"
-          ls ${VCPKG_LIB_DIR}
-
           su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \\;"
+          ls -lah dist/lib
 
+          # Step 7: Run patchelf
           su runner -c '
             for exe in dist/bin/* dist/libexec/*; do
               [ -f "$exe" ] && patchelf --set-rpath "\$ORIGIN/../lib" "$exe"
@@ -392,6 +386,7 @@ jobs:
             done
           '
 
+          # Step 8: Create portable bundle
           su runner -c "tar -czf ladybird-fedora.tar.gz dist"
           ls -lah ladybird-fedora.tar.gz
 
@@ -411,9 +406,9 @@ jobs:
           echo "Total files: $(tar -tzf ladybird-src/ladybird-fedora.tar.gz | wc -l)"
           echo ""
           if tar -tzf ladybird-src/ladybird-fedora.tar.gz | grep -q "Ladybird"; then
-            echo "✓ Ladybird binary found in archive"
+            echo "[INFO] Ladybird binary found in archive"
           else
-            echo "✗ ERROR: Ladybird binary NOT found in archive"
+            echo "[ERROR] Ladybird binary NOT found in archive"
             exit 1
           fi
 
@@ -432,7 +427,7 @@ jobs:
         run: |
           BUILD_END_TIME=$(date +%s)
           BUILD_DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
-          echo "Build completed in ${BUILD_DURATION} seconds"
+          echo "[INFO] Build completed in ${BUILD_DURATION} seconds"
 
   create-release:
     name: Create GitHub Release
@@ -479,9 +474,9 @@ jobs:
           tar -tzf ladybird-ubuntu.tar.gz | head -20
           echo "Total files: $(tar -tzf ladybird-ubuntu.tar.gz | wc -l)"
           if tar -tzf ladybird-ubuntu.tar.gz | grep -q "Ladybird"; then
-            echo "✓ Ladybird binary found in Ubuntu archive"
+            echo "[INFO] Ladybird binary found in Ubuntu archive"
           else
-            echo "✗ ERROR: Ladybird binary NOT found in Ubuntu archive"
+            echo "[ERROR] Ladybird binary NOT found in Ubuntu archive"
             exit 1
           fi
 
@@ -490,9 +485,9 @@ jobs:
           tar -tzf ladybird-fedora.tar.gz | head -20
           echo "Total files: $(tar -tzf ladybird-fedora.tar.gz | wc -l)"
           if tar -tzf ladybird-fedora.tar.gz | grep -q "Ladybird"; then
-            echo "✓ Ladybird binary found in Fedora archive"
+            echo "[INFO] Ladybird binary found in Fedora archive"
           else
-            echo "✗ ERROR: Ladybird binary NOT found in Fedora archive"
+            echo "[ERROR] Ladybird binary NOT found in Fedora archive"
             exit 1
           fi
 
