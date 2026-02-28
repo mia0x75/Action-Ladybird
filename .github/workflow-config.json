@@ -1,0 +1,129 @@
+{
+  "workflow": {
+    "name": "Build and Release Ladybird Browser",
+    "description": "Automated builds and releases for Ladybird Browser on Linux distributions",
+    "version": "1.0.0",
+    "optimized": true
+  },
+  "build": {
+    "ladybird_repository": "https://github.com/LadybirdBrowser/ladybird.git",
+    "optimizations": {
+      "caching": true,
+      "parallel_builds": true,
+      "shallow_clone": true,
+      "ccache_enabled": true
+    },
+    "distributions": [
+      {
+        "name": "ubuntu",
+        "runs_on": "ubuntu-latest",
+        "compiler": "gcc-14",
+        "dependencies": [
+          "autoconf",
+          "autoconf-archive",
+          "automake",
+          "build-essential",
+          "ccache",
+          "cmake",
+          "curl",
+          "fonts-liberation2",
+          "git",
+          "libdrm-dev",
+          "libgl1-mesa-dev",
+          "libtool",
+          "nasm",
+          "ninja-build",
+          "pkg-config",
+          "python3-venv",
+          "qt6-base-dev",
+          "qt6-tools-dev-tools",
+          "qt6-wayland",
+          "tar",
+          "unzip",
+          "zip",
+          "libpulse-dev"
+        ]
+      },
+      {
+        "name": "fedora",
+        "runs_on": "fedora:latest",
+        "container": true,
+        "compiler": "system-gcc",
+        "dependencies": [
+          "autoconf-archive",
+          "automake",
+          "ccache",
+          "cmake",
+          "curl",
+          "git",
+          "libdrm-devel",
+          "liberation-sans-fonts",
+          "libglvnd-devel",
+          "libtool",
+          "nasm",
+          "ninja-build",
+          "patchelf",
+          "perl-FindBin",
+          "perl-IPC-Cmd",
+          "perl-lib",
+          "perl-Time-Piece",
+          "qt6-qtbase-devel",
+          "qt6-qttools-devel",
+          "qt6-qtwayland-devel",
+          "tar",
+          "unzip",
+          "zip",
+          "zlib-ng-compat-static",
+          "pulseaudio-libs-devel"
+        ]
+      }
+    ]
+  },
+  "versioning": {
+    "strategy": "semantic",
+    "initial_version": "v1.0.0",
+    "auto_increment": "patch",
+    "version_file": ".github/version.txt"
+  },
+  "schedule": {
+    "enabled": true,
+    "cron": ["0 0,12 * * *"],
+    "description": "Twice daily at 00:00 and 12:00 UTC"
+  },
+  "triggers": {
+    "push": ["main", "master"],
+    "pull_request": ["main", "master"],
+    "workflow_dispatch": true,
+    "schedule": true
+  },
+  "artifacts": {
+    "retention_days": 7,
+    "include_launcher": true,
+    "packaging": {
+      "create_tarballs": true,
+      "include_debug_symbols": false
+    }
+  },
+  "release": {
+    "create_draft": false,
+    "prerelease": false,
+    "generate_release_notes": true,
+    "include_artifacts": true
+  },
+  "performance": {
+    "runner_type": "ubuntu-latest",
+    "parallel_build_level": 4,
+    "vcpkg_max_concurrency": 4,
+    "vcpkg_binary_sources": "clear;nuget,GitHub,readwrite;nuget,https://api.nuget.org/v3/index.json,read",
+    "cache_strategy": "vcpkg_dependencies,ccache",
+    "runner_specs": "4 vCPUs, 16GB RAM, improved storage"
+  },
+  "security": {
+    "ubuntu_build_user": "runner",
+    "fedora_build_user": "builder",
+    "fedora_build_user_uid": 1001,
+    "use_non_root_build": true,
+    "platform_specific_approach": true,
+    "fedora_container_root_for_packages": true
+  }
+}

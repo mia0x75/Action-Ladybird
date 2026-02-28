@@ -1,0 +1,571 @@
+name: Build and Release Ladybird Browser
+
+run-name: Build Ladybird v${{ github.event.inputs.version || 'latest' }}
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., 1.0.1)"
+        required: true
+        type: string
+        pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+  schedule:
+    - cron: "0 0,12 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LADYBIRD_REPO: https://github.com/LadybirdBrowser/ladybird.git
+  CACHE_DIR: ~/.cache/ccache
+  VCPKG_CACHE_DIR: ladybird-src/Build/vcpkg
+  MAKEFLAGS: "-j4"
+  Ninja_BUILD_JOBS: "4"
+  TZ: UTC
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
+
+jobs:
+  build-ubuntu:
+    name: Build Ladybird on Ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      OS_NAME: ubuntu
+      COMPILER: gcc-14
+
+    steps:
+      - name: Record start time
+        run: echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Checkout builder repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            .github
+          sparse-checkout-cone-mode: false
+
+      - name: Clone Ladybird repository
+        uses: actions/checkout@v4
+        with:
+          repository: LadybirdBrowser/ladybird
+          path: ladybird-src
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Configure Git safe directory
+        run: |
+          git config --global --add safe.directory /__w/Action-Ladybird/Action-Ladybird/ladybird-src
+
+      - name: Install Ubuntu dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y autoconf autoconf-archive automake build-essential ccache cmake curl fonts-liberation2 git libdrm-dev libgl1-mesa-dev libtool nasm ninja-build patchelf pkg-config python3-venv qt6-base-dev qt6-tools-dev-tools qt6-wayland tar unzip zip libpulse-dev libx11-dev libxcb1-dev libxkbcommon-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev tree rustc cargo
+
+      - name: Install CMake 3.25+
+        run: |
+          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/kitware.list
+          sudo apt update
+          sudo apt install -y cmake
+
+      - name: Setup GCC-14 compiler
+        run: |
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+          sudo apt update
+          sudo apt install -y g++-14 libstdc++-14-dev
+
+      - name: Configure ccache
+        run: |
+          sudo apt install -y ccache
+          mkdir -p $CACHE_DIR
+          echo "max_size = 500M" > $CACHE_DIR/ccache.conf
+          echo "compression = true" >> $CACHE_DIR/ccache.conf
+          echo "CC=ccache gcc" >> $GITHUB_ENV
+          echo "CXX=ccache g++" >> $GITHUB_ENV
+          ccache -M 500M
+          ccache -z
+
+      - name: Cache vcpkg dependencies
+        id: cache-vcpkg
+        uses: actions/cache@v4
+        with:
+          path: ladybird-src/Build/vcpkg
+          key: vcpkg-ubuntu-${{ runner.os }}-${{ hashFiles('**/vcpkg.json', '**/vcpkg-portfolio-*.json') }}
+          restore-keys: |
+            vcpkg-ubuntu-${{ runner.os }}-
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: $CACHE_DIR
+          key: ccache-ubuntu-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-ubuntu-${{ runner.os }}-
+
+      - name: Build Ladybird
+        working-directory: ladybird-src
+        run: |
+          ./Meta/ladybird.py build --preset Release
+
+      - name: Verify build output
+        working-directory: ladybird-src
+        run: |
+          if [ ! -f "Build/release/bin/Ladybird" ]; then
+            echo "ERROR: Ladybird binary not found after build"
+            ls -la Build/release/bin/
+            exit 1
+          fi
+          echo "Build verification passed"
+          ls -lh Build/release/bin/Ladybird
+
+      - name: Show ccache statistics
+        run: |
+          ccache -s
+          ccache -p
+
+      - name: Create portable Ladybird bundle with runtime libraries
+        working-directory: ladybird-src
+        run: |
+          mkdir -p dist/{bin,lib}
+
+          find Build/release/bin -maxdepth 1 -type f -executable \
+                 ! -name 'Test*' ! -name 'CTest*' ! -name 'cmake*' \
+                 -exec cp {} dist/bin/ \;
+
+          if [ -d "Build/release/vcpkg_installed" ]; then
+            VCPKG_BASE="Build/release/vcpkg_installed"
+          elif [ -d "Build/vcpkg/installed" ]; then
+            VCPKG_BASE="Build/vcpkg/installed"
+          else
+            echo "ERROR: Cannot find vcpkg installed directory"
+            exit 1
+          fi
+
+          TRIPLET=$(ls "$VCPKG_BASE" | grep -E 'x64-linux' | head -n1)
+          VCPKG_LIB_DIR="$VCPKG_BASE/$TRIPLET/lib"
+          if [ ! -d "$VCPKG_LIB_DIR" ]; then
+            echo "Error: vcpkg lib dir not found"
+            ls -la Build/vcpkg/installed/
+            exit 1
+          fi
+          find "$VCPKG_LIB_DIR" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \;
+
+          if [ -d Build/release/lib ]; then
+            find Build/release/lib -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \;
+          fi
+
+          if [ -d Build/lib ]; then
+            find Build/lib -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \;
+          fi
+
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+
+          for exe in dist/bin/*; do
+            if [ -f "$exe" ] && file "$exe" | grep -q "ELF"; then
+              patchelf --set-rpath '$ORIGIN/../lib' "$exe" 2>/dev/null || echo "Skipping RPATH for $exe"
+            fi
+          done
+
+          tar -czf ladybird-ubuntu.tar.gz dist
+          ls -lah ladybird-ubuntu.tar.gz
+
+      - name: Verify Ubuntu artifact
+        run: |
+          echo "Verifying Ubuntu artifact..."
+          tar -tzf ladybird-ubuntu.tar.gz | head -20
+          echo "---"
+          echo "Total files: $(tar -tzf ladybird-ubuntu.tar.gz | wc -l)"
+
+      - name: Upload Ubuntu artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ladybird-ubuntu
+          path: ladybird-src/ladybird-ubuntu.tar.gz
+          retention-days: 7
+
+      - name: Verify Ubuntu artifact content
+        run: |
+          echo "Verifying Ubuntu artifact..."
+          echo "Archive contents:"
+          tar -tzf ladybird-src/ladybird-ubuntu.tar.gz | head -30
+          echo ""
+          echo "Total files: $(tar -tzf ladybird-src/ladybird-ubuntu.tar.gz | wc -l)"
+          echo ""
+          if tar -tzf ladybird-src/ladybird-ubuntu.tar.gz | grep -q "Ladybird"; then
+            echo "✓ Ladybird binary found in archive"
+          else
+            echo "✗ ERROR: Ladybird binary NOT found in archive"
+            exit 1
+          fi
+
+      - name: Upload debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-ubuntu
+          path: |
+            ladybird-src/Build/**/CMakeCache.txt
+            ladybird-src/Build/**/*.log
+          retention-days: 7
+
+      - name: Report build time
+        if: always()
+        run: |
+          BUILD_END_TIME=$(date +%s)
+          BUILD_DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
+          echo "Build completed in ${BUILD_DURATION} seconds"
+
+  build-fedora:
+    name: Build Ladybird on Fedora
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    container:
+      image: fedora:latest
+
+    env:
+      OS_NAME: fedora
+      COMPILER: system-gcc
+
+    steps:
+      - name: Record start time
+        run: echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Install Fedora dependencies
+        run: |
+          dnf update -y
+          dnf install -y ccache tree autoconf-archive automake cmake curl git libdrm-devel liberation-sans-fonts libglvnd-devel libtool nasm ninja-build patchelf perl-FindBin perl-IPC-Cmd perl-lib perl-Time-Piece qt6-qtbase-devel qt6-qttools-devel qt6-qtwayland-devel tar unzip zip zlib-ng-compat-static pulseaudio-libs-devel shadow-utils sudo tree rust cargo
+
+      - name: Configure ccache
+        run: |
+          mkdir -p $CACHE_DIR
+          echo "max_size = 500M" > $CACHE_DIR/ccache.conf
+          echo "compression = true" >> $CACHE_DIR/ccache.conf
+          echo "CC=ccache gcc" >> $GITHUB_ENV
+          echo "CXX=ccache g++" >> $GITHUB_ENV
+          ccache -M 500M
+          ccache -z
+
+      - name: Cache vcpkg dependencies
+        id: cache-vcpkg-fedora
+        uses: actions/cache@v4
+        with:
+          path: ladybird-src/Build/vcpkg
+          key: vcpkg-fedora-${{ runner.os }}-${{ hashFiles('**/vcpkg.json', '**/vcpkg-portfolio-*.json') }}
+          restore-keys: |
+            vcpkg-fedora-${{ runner.os }}-
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: $CACHE_DIR
+          key: ccache-fedora-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-fedora-${{ runner.os }}-
+
+      - name: Setup non-root user
+        run: |
+          useradd -m -u 1001 runner
+          echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/runner
+
+      - name: Checkout builder repository
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github
+          sparse-checkout-cone-mode: false
+
+      - name: Clone Ladybird repository as non-root
+        uses: actions/checkout@v4
+        with:
+          repository: LadybirdBrowser/ladybird
+          path: ladybird-src
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Configure Git safe directory
+        run: |
+          su runner -c "git config --global --add safe.directory /__w/Action-Ladybird/Action-Ladybird/ladybird-src"
+
+      - name: Set ownership for runner user
+        run: |
+          chown -R runner:runner /__w/Action-Ladybird/Action-Ladybird/ladybird-src
+
+      - name: Build Ladybird as non-root
+        working-directory: ladybird-src
+        run: |
+          su runner -c "./Meta/ladybird.py build --preset Release"
+
+      - name: Verify build output
+        working-directory: ladybird-src
+        run: |
+          if [ ! -f "Build/release/bin/Ladybird" ]; then
+            echo "[ERROR] Ladybird binary not found after build"
+            su runner -c "ls -la Build/release/bin/"
+            exit 1
+          fi
+          echo "Build verification passed"
+          su runner -c "ls -lh Build/release/bin/Ladybird"
+
+      - name: Show ccache statistics
+        run: |
+          ccache -s
+          ccache -p
+
+      - name: Create portable Ladybird bundle with runtime libraries
+        working-directory: ladybird-src
+        run: |
+          # Step 1: Prepare folder structure
+          su runner -c "mkdir -p dist/{bin,lib}"
+          su runner -c "mkdir -p dist/share/ladybird/res dist/libexec"
+
+          # Step 2: Copy resources
+          # Base/res/* -> dist/share/ladybird/res/
+          su runner -c "cp -v -r Base/res/* dist/share/ladybird/res/"
+
+          # Step 3: Copy libexec folder
+          # Build/release/libexec -> dist/libexec
+          if [ -d Build/release/libexec ]; then
+            su runner -c 'find Build/release/libexec -maxdepth 1 -type f -executable -exec cp -v {} dist/libexec/ \;'
+          fi
+
+          # Step 4: Copy lib folder
+          # Build/release/lib64 -> dist/lib
+          LAGOM_LIB_DIR="Build/release/lib64"
+
+          if [ -n "$LAGOM_LIB_DIR" ] && [ -d "$LAGOM_LIB_DIR" ]; then
+            su runner -c "find \"$LAGOM_LIB_DIR\" -type f -name '*.so'   -exec cp -v {} dist/lib/ \\;"
+            su runner -c "find \"$LAGOM_LIB_DIR\" -type f -name '*.so.*' -exec cp -v {} dist/lib/ \\;"
+          fi
+          ls -lah dist/lib
+
+          # Step 5: Copy bin folder
+          # Build/release/bin -> dist/bin
+          su runner -c 'find Build/release/bin -maxdepth 1 -type f -executable \
+                         ! -name "Test*" ! -name "CTest*" ! -name "cmake*" \
+                         -exec cp -v {} dist/bin/ \;'
+
+          # Step 6: Copy vcpkg lib
+          # Build/release/vcpkg_installed/x64-linux-dynamic/lib -> dist/lib
+          if [ -d "Build/release/vcpkg_installed" ]; then
+            VCPKG_BASE="Build/release/vcpkg_installed"
+          elif [ -d "Build/vcpkg/installed" ]; then
+            VCPKG_BASE="Build/vcpkg/installed"
+          else
+            echo "[ERROR] Cannot find vcpkg installed directory"
+            exit 1
+          fi
+
+          TRIPLET=$(ls "$VCPKG_BASE" | grep -E 'x64-linux' | head -n1)
+          VCPKG_LIB_DIR="$VCPKG_BASE/$TRIPLET/lib"
+          if [ ! -d "$VCPKG_LIB_DIR" ]; then
+            echo "[ERROR] vcpkg lib dir not found"
+            exit 1
+          else
+            ls -lah $VCPKG_LIB_DIR
+          fi
+
+          if [ -n "$VCPKG_LIB_DIR" ] && [ -d "$VCPKG_LIB_DIR" ]; then
+            su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so'   -exec cp -v {} dist/lib/ \\;"
+            su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so.*' -exec cp -v {} dist/lib/ \\;"
+          else
+            echo "[ERROR] vcpkg lib dir not found"
+          fi
+          ls -lah dist/lib
+
+          # Step 7: Run patchelf
+          su runner -c '
+            for exe in dist/bin/* dist/libexec/*; do
+              [ -f "$exe" ] && patchelf --set-rpath "\$ORIGIN/../lib" "$exe"
+            done
+            for lib in dist/lib/*.so*; do
+              [ -f "$lib" ] && patchelf --set-rpath "\$ORIGIN" "$lib"
+            done
+          '
+
+          # Step 8: Create portable bundle
+          su runner -c "tar -czf ladybird-fedora.tar.gz dist"
+          ls -lah ladybird-fedora.tar.gz
+
+      - name: Upload Fedora artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ladybird-fedora
+          path: ladybird-src/ladybird-fedora.tar.gz
+          retention-days: 7
+
+      - name: Verify Fedora artifact content
+        run: |
+          echo "Verifying Fedora artifact..."
+          echo "Archive contents:"
+          tar -tzf ladybird-src/ladybird-fedora.tar.gz | head -30
+          echo ""
+          echo "Total files: $(tar -tzf ladybird-src/ladybird-fedora.tar.gz | wc -l)"
+          echo ""
+          if tar -tzf ladybird-src/ladybird-fedora.tar.gz | grep -q "Ladybird"; then
+            echo "[INFO] Ladybird binary found in archive"
+          else
+            echo "[ERROR] Ladybird binary NOT found in archive"
+            exit 1
+          fi
+
+      - name: Upload debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-fedora
+          path: |
+            ladybird-src/Build/**/CMakeCache.txt
+            ladybird-src/Build/**/*.log
+          retention-days: 7
+
+      - name: Report build time
+        if: always()
+        run: |
+          BUILD_END_TIME=$(date +%s)
+          BUILD_DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
+          echo "[INFO] Build completed in ${BUILD_DURATION} seconds"
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-ubuntu, build-fedora]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          sparse-checkout: |
+            .github
+            scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Configure Git
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: false
+
+      - name: Prepare release files
+        run: |
+          cp release-artifacts/ladybird-ubuntu/ladybird-ubuntu.tar.gz .
+          cp release-artifacts/ladybird-fedora/ladybird-fedora.tar.gz .
+          echo "=== Release files ready ==="
+          ls -la *.tar.gz
+
+      - name: Verify release artifacts
+        run: |
+          echo "=== Verifying Ubuntu artifact ==="
+          tar -tzf ladybird-ubuntu.tar.gz | head -20
+          echo "Total files: $(tar -tzf ladybird-ubuntu.tar.gz | wc -l)"
+          if tar -tzf ladybird-ubuntu.tar.gz | grep -q "Ladybird"; then
+            echo "[INFO] Ladybird binary found in Ubuntu archive"
+          else
+            echo "[ERROR] Ladybird binary NOT found in Ubuntu archive"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Verifying Fedora artifact ==="
+          tar -tzf ladybird-fedora.tar.gz | head -20
+          echo "Total files: $(tar -tzf ladybird-fedora.tar.gz | wc -l)"
+          if tar -tzf ladybird-fedora.tar.gz | grep -q "Ladybird"; then
+            echo "[INFO] Ladybird binary found in Fedora archive"
+          else
+            echo "[ERROR] Ladybird binary NOT found in Fedora archive"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== All artifact verifications passed ==="
+
+      - name: Get current version
+        id: current_version
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || cat .github/version.txt 2>/dev/null || echo "v1.0.0")
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "Current latest tag: $LATEST_TAG"
+
+      - name: Determine new version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          else
+            CURRENT_VERSION=${{ steps.current_version.outputs.LATEST_TAG }}
+            VERSION_NUM=${CURRENT_VERSION#v}
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_NUM"
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+            echo "VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "v${NEW_VERSION}" > .github/version.txt
+          fi
+          echo "Using version: ${{ steps.version.outputs.VERSION }}"
+
+      - name: Create and push tag
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && github.event_name != 'schedule'
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.VERSION }}"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          if git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${NEW_VERSION} already exists, skipping tag creation"
+          else
+            git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
+            git push origin "v${NEW_VERSION}"
+            echo "v${NEW_VERSION}" > .github/version.txt
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: Ladybird Browser v${{ steps.version.outputs.VERSION }}
+          body: |
+            ## Build Information:
+            - Commit: ${{ github.sha }}
+            - Build Date: ${{ github.event.head_commit.timestamp }}
+            - Trigger: ${{ github.event_name }}
+
+            ## Available Binaries:
+            - **Ubuntu**: `ladybird-ubuntu.tar.gz`
+            - **Fedora**: `ladybird-fedora.tar.gz`
+
+            ## Installation:
+            1. Download the appropriate tarball for your distribution
+            2. Extract: `tar -xzf ladybird-ubuntu.tar.gz`
+            3. Run: `./Ladybird`
+
+            **Note:** This is an automated build. For official releases, check the main Ladybird repository.
+          draft: false
+          prerelease: false
+          files: |
+            ladybird-ubuntu.tar.gz
+            ladybird-fedora.tar.gz
+          generate_release_notes: false
+          discussion_category_name: ""
+          make_latest: true
