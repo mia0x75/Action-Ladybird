@@ -69,7 +69,7 @@ jobs:
       - name: Install Ubuntu dependencies
         run: |
           sudo apt update
-          sudo apt install -y autoconf autoconf-archive automake build-essential ccache cmake curl fonts-liberation2 git libdrm-dev libgl1-mesa-dev libtool nasm ninja-build patchelf pkg-config python3-venv qt6-base-dev qt6-tools-dev-tools qt6-wayland tar unzip zip libpulse-dev libx11-dev libxcb1-dev libxkbcommon-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev tree rustc cargo
+          sudo apt install -y autoconf autoconf-archive automake build-essential ccache cmake curl fonts-liberation2 git libdrm-dev libgl1-mesa-dev libtool nasm ninja-build patchelf pkg-config python3-venv qt6-base-dev qt6-tools-dev-tools qt6-wayland tar unzip zip libpulse-dev libx11-dev libxcb1-dev libxkbcommon-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev tree rustc cargo unicode-data libunicode-dev
 
       - name: Install CMake 3.25+
         run: |
