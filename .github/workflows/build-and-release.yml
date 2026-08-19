@@ -1,0 +1,531 @@
+name: Build Ladybird Browser
+
+run-name: "Building Ladybird latest version..."
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LADYBIRD_REPO: https://github.com/LadybirdBrowser/ladybird.git
+  CACHE_DIR: ~/.cache/ccache
+  VCPKG_CACHE_DIR: ladybird-src/Build/vcpkg
+  MAKEFLAGS: "-j4"
+  Ninja_BUILD_JOBS: "4"
+  TZ: UTC
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
+
+jobs:
+  build-ubuntu:
+    name: Build Ladybird for Ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      OS_NAME: ubuntu
+      COMPILER: gcc-14
+
+    steps:
+      - name: Record build start time
+        run: echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Checkout Ladybird source code
+        uses: actions/checkout@v7
+        with:
+          repository: LadybirdBrowser/ladybird
+          path: ladybird-src
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Configure Git safe directory
+        run: |
+          git config --global --add safe.directory /__w/Action-Ladybird/Action-Ladybird/ladybird-src
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt remove -y "qt6-*"
+          sudo apt install -y autoconf autoconf-archive automake build-essential \
+                              ccache cmake curl fonts-liberation2 git libdrm-dev \
+                              libgl1-mesa-dev libtool nasm ninja-build patchelf \
+                              pkg-config python3-venv tar unzip zip libpulse-dev libx11-dev \
+                              libxcb1-dev libxkbcommon-dev libxrandr-dev libxi-dev libxcursor-dev \
+                              libxinerama-dev tree rustc cargo libncurses-dev libncurses5-dev \
+                              libtinfo-dev libicu-dev libglib2.0-dev libutf8proc-dev unicode-data
+      
+      - name: Install CMake
+        run: |
+          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/kitware.list
+          sudo apt update
+          sudo apt install -y cmake
+
+      - name: Install GCC
+        run: |
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+          sudo apt update
+          sudo apt install -y g++-14 libstdc++-14-dev
+          
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      - name: Install Qt via aqtinstall
+        run: |
+          python -m pip install aqtinstall
+          python -m aqt list-qt linux desktop --modules 6.10.3 linux_gcc_64
+          python -m aqt install-qt linux desktop 6.10.3 linux_gcc_64 \
+            -m qtpositioning qtmultimedia qtsensors qtwebchannel \
+            -O $GITHUB_WORKSPACE/Qt
+            
+          echo "CMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/Qt/6.10.3/gcc_64" >> $GITHUB_ENV
+          echo "Qt6_DIR=$GITHUB_WORKSPACE/Qt/6.10.3/gcc_64/lib/cmake/Qt6" >> $GITHUB_ENV
+          echo "$GITHUB_WORKSPACE/Qt/6.10.3/gcc_64/bin" >> $GITHUB_PATH
+          
+      - name: Build Ladybird
+        working-directory: ladybird-src
+        run: |
+          ./Meta/ladybird.py build --preset Release
+
+      - name: Verify build artifacts
+        working-directory: ladybird-src
+        run: |
+          if [ ! -f "Build/release/bin/Ladybird" ]; then
+            echo "ERROR: Ladybird binary not found after build"
+            ls -la Build/release/bin/
+            exit 1
+          fi
+          echo "Build verification passed"
+          ls -lh Build/release/bin/Ladybird
+
+      - name: Package Ladybird release
+        working-directory: ladybird-src
+        run: |
+          mkdir -p dist/{bin,lib}
+
+          find Build/release/bin -maxdepth 1 -type f -executable \
+                 ! -name 'Test*' ! -name 'CTest*' ! -name 'cmake*' \
+                 -exec cp {} dist/bin/ \;
+
+          if [ -d "Build/release/vcpkg_installed" ]; then
+            VCPKG_BASE="Build/release/vcpkg_installed"
+          elif [ -d "Build/vcpkg/installed" ]; then
+            VCPKG_BASE="Build/vcpkg/installed"
+          else
+            echo "ERROR: Cannot find vcpkg installed directory"
+            exit 1
+          fi
+
+          TRIPLET=$(ls "$VCPKG_BASE" | grep -E 'x64-linux' | head -n1)
+          VCPKG_LIB_DIR="$VCPKG_BASE/$TRIPLET/lib"
+          if [ ! -d "$VCPKG_LIB_DIR" ]; then
+            echo "Error: vcpkg lib dir not found"
+            ls -la Build/vcpkg/installed/
+            exit 1
+          fi
+          find "$VCPKG_LIB_DIR" -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \;
+
+          if [ -d Build/release/lib ]; then
+            find Build/release/lib -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \;
+          fi
+
+          if [ -d Build/lib ]; then
+            find Build/lib -type f -name '*.so' -o -name '*.so.*' -exec cp {} dist/lib/ \;
+          fi
+
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+
+          for exe in dist/bin/*; do
+            if [ -f "$exe" ] && file "$exe" | grep -q "ELF"; then
+              patchelf --set-rpath '$ORIGIN/../lib' "$exe" 2>/dev/null || echo "Skipping RPATH for $exe"
+            fi
+          done
+
+          tar -czf ladybird-ubuntu.tar.gz dist
+          ls -lah ladybird-ubuntu.tar.gz
+
+      - name: Verify archive contents
+        run: |
+          echo "Verifying Ubuntu artifact..."
+          tar -tzf ladybird-ubuntu.tar.gz | head -20
+          echo "---"
+          echo "Total files: $(tar -tzf ladybird-ubuntu.tar.gz | wc -l)"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ladybird-ubuntu
+          path: ladybird-src/ladybird-ubuntu.tar.gz
+          retention-days: 7
+
+      - name: Verify uploaded artifact structure
+        run: |
+          echo "Verifying Ubuntu artifact..."
+          echo "Archive contents:"
+          tar -tzf ladybird-src/ladybird-ubuntu.tar.gz | head -30
+          echo ""
+          echo "Total files: $(tar -tzf ladybird-src/ladybird-ubuntu.tar.gz | wc -l)"
+          echo ""
+          if tar -tzf ladybird-src/ladybird-ubuntu.tar.gz | grep -q "Ladybird"; then
+            echo "✓ Ladybird binary found in archive"
+          else
+            echo "✗ ERROR: Ladybird binary NOT found in archive"
+            exit 1
+          fi
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-ubuntu
+          path: |
+            ladybird-src/Build/**/CMakeCache.txt
+            ladybird-src/Build/**/*.log
+          retention-days: 7
+
+      - name: Report build duration
+        if: always()
+        run: |
+          BUILD_END_TIME=$(date +%s)
+          BUILD_DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
+          echo "Build completed in ${BUILD_DURATION} seconds"
+
+  build-fedora:
+    name: Build Ladybird for Fedora
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    container:
+      image: fedora:latest
+
+    env:
+      OS_NAME: fedora
+      COMPILER: system-gcc
+
+    steps:
+      - name: Record build start time
+        run: echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        run: |
+          dnf update -y
+          dnf install -y ccache tree autoconf-archive automake cmake \
+                        curl git libdrm-devel liberation-sans-fonts \
+                        libglvnd-devel libtool nasm ninja-build patchelf \
+                        perl-FindBin perl-IPC-Cmd perl-lib perl-Time-Piece \
+                        qt6-qtbase-devel qt6-qttools-devel qt6-qtwayland-devel \
+                        tar unzip zip zlib-ng-compat-static pulseaudio-libs-devel \
+                        shadow-utils sudo tree rust cargo ncurses-devel autoconf \
+                        pkgconfig gcc-c++ qt6-qtpositioning-devel qt6-qtmultimedia-devel \
+                        qt6-qtsensors-devel qt6-qtwebchannel-devel qt6-qtbase-private-devel
+
+      - name: Set up non-root user
+        run: |
+          useradd -m -u 1001 runner
+          echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/runner
+
+      - name: Checkout Ladybird source code
+        uses: actions/checkout@v7
+        with:
+          repository: LadybirdBrowser/ladybird
+          path: ladybird-src
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Configure Git safe directory
+        run: |
+          su runner -c "git config --global --add safe.directory /__w/Action-Ladybird/Action-Ladybird/ladybird-src"
+
+      - name: Update repository ownership
+        run: |
+          chown -R runner:runner /__w/Action-Ladybird/Action-Ladybird/ladybird-src
+
+      - name: Build Ladybird
+        working-directory: ladybird-src
+        run: |
+          su runner -c "./Meta/ladybird.py build --preset Release"
+
+      - name: Verify build artifacts
+        working-directory: ladybird-src
+        run: |
+          if [ ! -f "Build/release/bin/Ladybird" ]; then
+            echo "[ERROR] Ladybird binary not found after build"
+            su runner -c "ls -la Build/release/bin/"
+            exit 1
+          fi
+          echo "Build verification passed"
+          su runner -c "ls -lh Build/release/bin/Ladybird"
+
+      - name: Package Ladybird release
+        working-directory: ladybird-src
+        run: |
+          # Step 1: Prepare folder structure
+          su runner -c "mkdir -p dist/{bin,lib}"
+          su runner -c "mkdir -p dist/share/ladybird/res dist/libexec"
+
+          # Step 2: Copy resources
+          # Base/res/* -> dist/share/ladybird/res/
+          su runner -c "cp -v -r Base/res/* dist/share/ladybird/res/"
+
+          # Step 3: Copy libexec folder
+          # Build/release/libexec -> dist/libexec
+          if [ -d Build/release/libexec ]; then
+            su runner -c 'find Build/release/libexec -maxdepth 1 -type f -executable -exec cp -v {} dist/libexec/ \;'
+          fi
+
+          # Step 4: Copy lib folder
+          # Build/release/lib64 -> dist/lib
+          LAGOM_LIB_DIR="Build/release/lib64"
+
+          if [ -n "$LAGOM_LIB_DIR" ] && [ -d "$LAGOM_LIB_DIR" ]; then
+            su runner -c "find \"$LAGOM_LIB_DIR\" -type f -name '*.so'   -exec cp -v {} dist/lib/ \\;"
+            su runner -c "find \"$LAGOM_LIB_DIR\" -type f -name '*.so.*' -exec cp -v {} dist/lib/ \\;"
+          fi
+          ls -lah dist/lib
+
+          # Step 5: Copy bin folder
+          # Build/release/bin -> dist/bin
+          su runner -c 'find Build/release/bin -maxdepth 1 -type f -executable \
+                         ! -name "Test*" ! -name "CTest*" ! -name "cmake*" \
+                         -exec cp -v {} dist/bin/ \;'
+
+          # Step 6: Copy vcpkg lib
+          # Build/release/vcpkg_installed/x64-linux-dynamic/lib -> dist/lib
+          if [ -d "Build/release/vcpkg_installed" ]; then
+            VCPKG_BASE="Build/release/vcpkg_installed"
+          elif [ -d "Build/vcpkg/installed" ]; then
+            VCPKG_BASE="Build/vcpkg/installed"
+          else
+            echo "[ERROR] Cannot find vcpkg installed directory"
+            exit 1
+          fi
+
+          TRIPLET=$(ls "$VCPKG_BASE" | grep -E 'x64-linux' | head -n1)
+          VCPKG_LIB_DIR="$VCPKG_BASE/$TRIPLET/lib"
+          if [ ! -d "$VCPKG_LIB_DIR" ]; then
+            echo "[ERROR] vcpkg lib dir not found"
+            exit 1
+          else
+            ls -lah $VCPKG_LIB_DIR
+          fi
+
+          if [ -n "$VCPKG_LIB_DIR" ] && [ -d "$VCPKG_LIB_DIR" ]; then
+            su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so'   -exec cp -v {} dist/lib/ \\;"
+            su runner -c "find \"$VCPKG_LIB_DIR\" -type f -name '*.so.*' -exec cp -v {} dist/lib/ \\;"
+          else
+            echo "[ERROR] vcpkg lib dir not found"
+          fi
+          ls -lah dist/lib
+
+          # Step 7: Run patchelf
+          su runner -c '
+            for exe in dist/bin/* dist/libexec/*; do
+              [ -f "$exe" ] && patchelf --set-rpath "\$ORIGIN/../lib" "$exe"
+            done
+            for lib in dist/lib/*.so*; do
+              [ -f "$lib" ] && patchelf --set-rpath "\$ORIGIN" "$lib"
+            done
+          '
+
+          # Step 8: Create portable bundle
+          su runner -c "tar -czf ladybird-fedora.tar.gz dist"
+          ls -lah ladybird-fedora.tar.gz
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ladybird-fedora
+          path: ladybird-src/ladybird-fedora.tar.gz
+          retention-days: 7
+
+      - name: Verify uploaded artifact structure
+        run: |
+          echo "Verifying Fedora artifact..."
+          echo "Archive contents:"
+          tar -tzf ladybird-src/ladybird-fedora.tar.gz | head -30
+          echo ""
+          echo "Total files: $(tar -tzf ladybird-src/ladybird-fedora.tar.gz | wc -l)"
+          echo ""
+          if tar -tzf ladybird-src/ladybird-fedora.tar.gz | grep -q "Ladybird"; then
+            echo "[INFO] Ladybird binary found in archive"
+          else
+            echo "[ERROR] Ladybird binary NOT found in archive"
+            exit 1
+          fi
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-fedora
+          path: |
+            ladybird-src/Build/**/CMakeCache.txt
+            ladybird-src/Build/**/*.log
+          retention-days: 7
+
+      - name: Report build duration
+        if: always()
+        run: |
+          BUILD_END_TIME=$(date +%s)
+          BUILD_DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
+          echo "[INFO] Build completed in ${BUILD_DURATION} seconds"
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-ubuntu, build-fedora]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout local repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.PAT }}
+          fetch-depth: 0
+
+      - name: Configure Git author info
+        run: |
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          
+      - name: Install Node.js dependencies
+        run: |
+          npm install @actions/core @actions/github
+          
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+          merge-multiple: false
+
+      - name: Prepare release assets
+        run: |
+          cp release-artifacts/ladybird-ubuntu/ladybird-ubuntu.tar.gz .
+          cp release-artifacts/ladybird-fedora/ladybird-fedora.tar.gz .
+          echo "=== Release files ready ==="
+          ls -la *.tar.gz
+
+      - name: Verify release asset contents
+        run: |
+          echo "=== Verifying Ubuntu artifact ==="
+          tar -tzf ladybird-ubuntu.tar.gz | head -20
+          echo "Total files: $(tar -tzf ladybird-ubuntu.tar.gz | wc -l)"
+          if tar -tzf ladybird-ubuntu.tar.gz | grep -q "Ladybird"; then
+            echo "[INFO] Ladybird binary found in Ubuntu archive"
+          else
+            echo "[ERROR] Ladybird binary NOT found in Ubuntu archive"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Verifying Fedora artifact ==="
+          tar -tzf ladybird-fedora.tar.gz | head -20
+          echo "Total files: $(tar -tzf ladybird-fedora.tar.gz | wc -l)"
+          if tar -tzf ladybird-fedora.tar.gz | grep -q "Ladybird"; then
+            echo "[INFO] Ladybird binary found in Fedora archive"
+          else
+            echo "[ERROR] Ladybird binary NOT found in Fedora archive"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== All artifact verifications passed ==="
+
+      - name: Determine release version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # If this run was triggered by a tag, extract the tag's version
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          else
+            # Use date-based version in UTC: YYYY.MM.DD
+            NEW_VERSION=$(date -u +%Y.%m.%d)
+            echo "VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create and push git tag
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.VERSION }}"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          if git rev-parse "${NEW_VERSION}" >/dev/null 2>&1; then
+            echo "Tag ${NEW_VERSION} already exists, skipping tag creation"
+          else
+            git tag -a "${NEW_VERSION}" -m "Release ${NEW_VERSION}"
+            git push origin "${NEW_VERSION}"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: Ladybird Browser ${{ steps.version.outputs.VERSION }}
+          body: |
+            ## Installation:
+            1. Download the appropriate tarball for your distribution
+            2. Extract: `tar -xzf ladybird-ubuntu.tar.gz`
+            3. Run: `./Ladybird`
+
+            **Note:** This is an automated build. For official releases, check the main Ladybird repository.
+          draft: false
+          prerelease: false
+          files: |
+            ladybird-ubuntu.tar.gz
+            ladybird-fedora.tar.gz
+          generate_release_notes: false
+          discussion_category_name: ""
+          make_latest: true
+          
+      - name: Rebase repository history
+        run: |
+          # 创建新的孤立分支（orphan branch）
+          git checkout --orphan new_main
+          
+          # 暂存所有更改
+          git add .github && git add AGENTS.md && git add README.md
+          
+          # 创建新的 commit，只保留一个
+          git commit -m "Build Ladybird latest version on ${{ steps.version.outputs.VERSION }}" || true
+          
+          # 删除旧的 main 分支
+          git branch -D main
+          
+          # 将新分支重命名为 main
+          git branch -m main
+          
+          # 强制推送到远程
+          git push origin main --force
+
+      - name: Clean up old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          delete_workflow_pattern: "Build Ladybird"
+          retain_days: 14
+          keep_minimum_runs: 14
+          delete_run_by_conclusion_pattern: "cancelled, skipped, success"
+
+      - name: Remove old releases
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 100 --json name,createdAt,isPrerelease --jq '.[] | select(.createdAt < (now - 1209600)) | .name' | while read release; do
+            echo "Deleting release: $release"
+            gh release delete "$release" -y
+          done
