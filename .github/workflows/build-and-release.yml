@@ -444,8 +444,8 @@ jobs:
             # If this run was triggered by a tag, extract the tag's version
             echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           else
-            # Use date-based version in UTC: YYYY.MM.DD
-            NEW_VERSION=$(date -u +%Y.%m.%d)
+            # Use date-based version in UTC: YY.MM.DD
+            NEW_VERSION=$(date -u +%y.%m.%d)
             echo "VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
           fi
 
@@ -466,8 +466,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.version.outputs.VERSION }}
-          name: Ladybird Browser ${{ steps.version.outputs.VERSION }}
+          tag_name: Version ${{ steps.version.outputs.VERSION }}
+          name: Version ${{ steps.version.outputs.VERSION }}
           body: |
             ## Installation:
             1. Download the appropriate tarball for your distribution
