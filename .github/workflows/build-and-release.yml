@@ -156,6 +156,7 @@ jobs:
           ls -lah ladybird-ubuntu.tar.gz
 
       - name: Verify archive contents
+        working-directory: ladybird-src
         run: |
           echo "Verifying Ubuntu artifact..."
           tar -tzf ladybird-ubuntu.tar.gz | head -20
@@ -173,11 +174,11 @@ jobs:
         run: |
           echo "Verifying Ubuntu artifact..."
           echo "Archive contents:"
-          tar -tzf ladybird-src/ladybird-ubuntu.tar.gz | head -30
+          tar -tzf ladybird-src/ladybird-ubuntu.tar.gz 2>/dev/null | head -30 || true
           echo ""
-          echo "Total files: $(tar -tzf ladybird-src/ladybird-ubuntu.tar.gz | wc -l)"
+          echo "Total files: $(tar -tzf ladybird-src/ladybird-ubuntu.tar.gz 2>/dev/null | wc -l)"
           echo ""
-          if tar -tzf ladybird-src/ladybird-ubuntu.tar.gz | grep -q "Ladybird"; then
+          if tar -tzf ladybird-src/ladybird-ubuntu.tar.gz 2>/dev/null | grep -q "Ladybird"; then
             echo "✓ Ladybird binary found in archive"
           else
             echo "✗ ERROR: Ladybird binary NOT found in archive"
@@ -352,11 +353,11 @@ jobs:
         run: |
           echo "Verifying Fedora artifact..."
           echo "Archive contents:"
-          tar -tzf ladybird-src/ladybird-fedora.tar.gz | head -30
+          tar -tzf ladybird-src/ladybird-fedora.tar.gz 2>/dev/null | head -30 || true
           echo ""
-          echo "Total files: $(tar -tzf ladybird-src/ladybird-fedora.tar.gz | wc -l)"
+          echo "Total files: $(tar -tzf ladybird-src/ladybird-fedora.tar.gz 2>/dev/null | wc -l)"
           echo ""
-          if tar -tzf ladybird-src/ladybird-fedora.tar.gz | grep -q "Ladybird"; then
+          if tar -tzf ladybird-src/ladybird-fedora.tar.gz 2>/dev/null | grep -q "Ladybird"; then
             echo "[INFO] Ladybird binary found in archive"
           else
             echo "[ERROR] Ladybird binary NOT found in archive"
