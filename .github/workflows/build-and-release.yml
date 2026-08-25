@@ -456,7 +456,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
 
-          if git rev-parse "Version ${NEW_VERSION}" >/dev/null 2>&1; then
+          if git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1; then
             echo "Tag v${NEW_VERSION} already exists, skipping tag creation"
           else
             git tag -a "v${NEW_VERSION}" -m "Release ${NEW_VERSION}"
@@ -467,7 +467,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.version.outputs.VERSION }}
-          name: Version ${{ steps.version.outputs.VERSION }}
+          name: v${{ steps.version.outputs.VERSION }}
           body: |
             ## Installation:
             1. Download the appropriate tarball for your distribution
