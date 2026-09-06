@@ -518,7 +518,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          gh release list --limit 100 --json name,createdAt --jq '.[:-10] | .[].name' | while read release; do
-            echo "Deleting release: $release"
-            gh release delete "$release" -y
+          gh release list --limit 200 --json name,tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[10:] | .[] | "\(.name)\t\(.tagName)"' | while IFS=$'\t' read -r name tag; do
+            echo "Deleting release: $name (tag: $tag)"
+            gh release delete "$name" -y || echo "Failed to delete release $name"
+
+            # 如果有对应的 tag，则删除远程 tag
+            if [ -n "$tag" ] && [ "$tag" != "null" ]; then
+              echo "Deleting remote tag: $tag"
+              git push origin --delete "$tag" || \
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/$(printf %s "$tag" | jq -sRr @uri)" || \
+              echo "Failed to delete tag $tag"
+            fi
           done
