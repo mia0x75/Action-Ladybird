@@ -509,7 +509,6 @@ jobs:
         with:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
-          delete_workflow_pattern: "Building Ladybird"
           retain_days: 10
           keep_minimum_runs: 10
           delete_run_by_conclusion_pattern: "cancelled, skipped, success"
